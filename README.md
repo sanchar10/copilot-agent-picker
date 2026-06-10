@@ -1,67 +1,58 @@
-# agent-picker
+# copilot-agent-picker
 
 A user-scoped **GitHub Copilot CLI extension** that brings the CLI's `/agent`
 sticky-agent behavior to the **Copilot desktop app** (and the CLI) via a `#agent`
 chat directive.
 
-The Copilot app has no native agent picker. This extension intercepts a leading
-`#agent <name>` directive on the `onUserPromptSubmitted` hook and calls the session's
-agent RPC to switch agents **for real** — the runtime swaps the agent's actual tool
-allowlist and model, exactly like the CLI's `/agent`. The selection stays sticky until
-you change or clear it.
+Custom agents are one of Copilot's most useful features — each bundles its own
+**system prompt, tool allowlist, and model**, so you can keep a focused set of personas
+(a tightly-scoped `security-review` agent, a read-only `research` agent, a heavyweight `architect` on a bigger model) and reach for the right one per task. The **CLI** lets you pick one with `/agent` and it stays active for the whole session, but the **desktop app** has no equivalent — no menu, command, or shortcut — so app users are silently locked to the default agent and can't reach the custom agents they've defined. You can still *ask* the app to "use the docs agent" in plain language, but that's not deterministic: the model may partially adopt it, or quietly drift back to the default after a few turns.
 
-> **Real switching, not persona faking.** This uses the runtime's experimental agent RPC
-> (`session.rpc.agent.select / deselect / list / getCurrent / reload`), so the swap is a
-> genuine change of the agent's **tool allowlist + model**. The runtime keeps the
-> selection sticky on its own, so normal turns are passed through untouched.
+This extension closes that gap. It intercepts a leading `#agent <name>` directive on the
+`onUserPromptSubmitted` hook and calls the session's agent RPC to switch agents **for real** —
+the runtime swaps the agent's actual tool allowlist and model, exactly like the CLI's
+`/agent`. The selection stays sticky until you change or clear it.
+
+> **Real switching.** This uses the runtime's agent RPC
+> (`session.rpc.agent.select / deselect / list / getCurrent / reload`), so the swap is a genuine change of the agent's **tool allowlist + model**. The runtime keeps the selection sticky until cleared.
 
 ---
 
 ## Install
 
-Copilot CLI auto-discovers any folder that contains an `extension.mjs`. You don't build
-or `npm install` anything — the `@github/copilot-sdk` import is resolved automatically.
-Just drop this folder into one of the two discovery locations and restart Copilot.
+Pick whichever method is easiest for you; all of them just land `extension.mjs` in a discovery folder named `copilot-agent-picker`.
 
-### Option A — user-scoped (recommended: applies to every session)
-
-Copy the `agent-picker` folder into your Copilot extensions directory:
-
-| OS | Destination |
-|---|---|
-| Windows | `%USERPROFILE%\.copilot\extensions\agent-picker\` |
-| macOS / Linux | `~/.copilot/extensions/agent-picker/` |
-
-```bash
-# macOS / Linux
-git clone <REPO_URL> /tmp/agent-picker
-mkdir -p ~/.copilot/extensions
-cp -R /tmp/agent-picker ~/.copilot/extensions/agent-picker
-```
+### Option A — single-file download (no git, no copy) ⭐ easiest
 
 ```powershell
 # Windows (PowerShell)
-git clone <REPO_URL> $env:TEMP\agent-picker
-New-Item -ItemType Directory -Force "$env:USERPROFILE\.copilot\extensions" | Out-Null
-Copy-Item -Recurse -Force "$env:TEMP\agent-picker" "$env:USERPROFILE\.copilot\extensions\agent-picker"
+$dir = "$env:USERPROFILE\.copilot\extensions\copilot-agent-picker"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/sanchar10/copilot-agent-picker/main/extension.mjs -OutFile "$dir\extension.mjs"
 ```
 
-The installed folder **must** be named so it contains `extension.mjs` directly
-(`.../extensions/agent-picker/extension.mjs`). The folder name becomes the extension id.
-
-### Option B — project-scoped (just one repo)
-
-Copy the folder into a repository's `.github/extensions/`:
-
-```
-<your-repo>/.github/extensions/agent-picker/extension.mjs
+```bash
+# macOS / Linux
+mkdir -p ~/.copilot/extensions/copilot-agent-picker
+curl -fsSL https://raw.githubusercontent.com/sanchar10/copilot-agent-picker/main/extension.mjs \
+  -o ~/.copilot/extensions/copilot-agent-picker/extension.mjs
 ```
 
-The extension is then active only when Copilot runs against that repo.
+
+### Option B — ask Copilot to install it (app, zero shell)
+
+The Copilot app can install an extension from a repo for you. In chat, ask:
+
+> Install the Copilot extension from `https://github.com/sanchar10/copilot-agent-picker`
+> and name it `copilot-agent-picker`.
+
+> The discovery folder **must** contain `extension.mjs` directly
+> (`.../extensions/copilot-agent-picker/extension.mjs`). The folder name becomes the
+> extension id and is otherwise cosmetic — it does **not** affect the `#agent` directive.
 
 ### Activate & verify
 
-1. Restart the Copilot app (or in the CLI, run `/clear` to reload extensions).
+1. Restart the Copilot app.
 2. In chat, type `#agent list` — you should see your available agents.
 3. `#agent <name>` switches; `#agent clear` reverts.
 
@@ -72,14 +63,11 @@ The extension is then active only when Copilot runs against that repo.
 | Command | Effect |
 |---|---|
 | `#agent <name>` | Switch to `<name>`. Takes effect from your **next** message. |
-| `#agent status` (or bare `#agent`) | Report which agent is currently active. |
-| `#agent list` (or `#agent agents`) | List selectable agents (name, model). |
-| `#agent clear` (or `off` / `none` / `default`) | Revert to the default agent. |
-| `#agent reload` | Reload agent definitions from disk. |
+| `#agent status` | Report which agent is currently active. |
+| `#agent list` (or bare `#agent`) | List selectable agents (name, model). Re-scans agent definitions from disk first, so newly added agents always show up. |
+| `#agent clear` | Revert to the default agent. |
 
-The directive must be the **first non-whitespace text** on its line, so `#agent` inside a
-code block or mid-paragraph is ignored. The app's hidden context blocks
-(`<canvas-context>`, `<current_datetime>`, …) are stripped before parsing.
+The directive must be the **first non-whitespace text** on its line.
 
 ## Output & failure behavior
 
@@ -101,18 +89,10 @@ This hook fires on **every** prompt, so the no-directive path is kept cheap:
   line-splitting, no stripping, no regex, **no logging / disk I/O**. (A plain `startsWith("#")`
   can't be used because the app prepends hidden context blocks ahead of your text, so a real
   `#agent` line rarely sits at character 0.)
-- **Logging only on directive turns.** Normal messages write nothing to `agent-picker.log`.
+- **Logging only on directive turns.** Normal messages write nothing to `copilot-agent-picker.log`.
 - **Extensible command dispatch.** The parser captures the command word (`#<command>`) and
   switches on it. Today only `agent` is registered; unknown `#<command>` directives pass
   through unchanged. Adding a future command is a new `case` — the fast path is untouched.
-
-### Timing
-
-`agent.select` applies to *subsequent* turns. So the message that carries
-`#agent <name>` still runs as the previous/default agent (it just confirms the switch);
-from your next message on, the chosen agent — with its own tools and model — handles the
-turn. If you append a task on the same line (`#agent foo do X`), resend the task as a new
-message so the switched agent processes it.
 
 ## Agent sources
 
@@ -126,17 +106,22 @@ Agents are discovered by the runtime (same as the CLI):
 
 ## Files this extension writes
 
-- `agent-picker.log` — diagnostic log (truncated prompt preview only). Written **only on
-  directive turns** (and on errors); normal messages log nothing. Records each
-  `select`/`deselect`/`list` result, used to confirm app-originated turns reach the hook and
-  that switches apply. (Git-ignored — never committed.)
+- `copilot-agent-picker.log` — diagnostic log written **inside the extension's own folder**
+  (`.../extensions/copilot-agent-picker/copilot-agent-picker.log`); truncated prompt preview only.
+  Written **only on directive turns** (and on errors); normal messages log nothing. Records
+  each `select`/`deselect`/`list` result, used to confirm app-originated turns reach the hook
+  and that switches apply.
 
-## Why not inline `#agent` autocomplete?
+## Limitations
 
-The CLI extension hooks only fire **after** a prompt is submitted — there is no
-completion/suggestion-provider API for the app's input box. As-you-type `#agent`
-autocomplete would have to be a native app frontend feature; an extension can't drive it.
-Use `#agent list` to discover names instead.
+- **Each `#agent` directive costs one chat turn.** A `UserPromptSubmitted` hook can't
+  abort the model turn, so the directive can't be handled silently — it's rewritten into a
+  single bounded confirmation line (see *Output & failure behavior*), which stays in
+  your conversation history. The footprint is small but not zero — a ~70-token preamble plus the reply. 
+  Switch/status/clear are a single line (~15–30 tokens); `#agent list` echoes one line per agent, ~15 tokens per agent.
+  
+  Prefer switching at a **task boundary** (start of a task, or right after `/clear`) to keep an in-progress thread clean, 
+  since the selection is sticky anyway.
 
 ## Requirements
 
@@ -145,20 +130,6 @@ Use `#agent list` to discover names instead.
   message instead of failing silently.
 - No external dependencies; pure ESM (`extension.mjs`). The `@github/copilot-sdk` import is
   provided by the CLI at runtime.
-
-## For maintainers — distribution
-
-Because installation is just "place the folder in a discovery location," distribution is
-simply sharing this repo:
-
-- **Manual:** users `git clone` (or download a release zip) and copy the folder into
-  `~/.copilot/extensions/` (user-scoped) or `<repo>/.github/extensions/` (project-scoped),
-  then restart Copilot — see [Install](#install) above.
-- **Vendor into a team repo:** commit `agent-picker/` under that repo's
-  `.github/extensions/` so every teammate working in the repo gets it automatically.
-
-Keep `extension.mjs` at the folder root and don't commit `agent-picker.log` (handled by
-`.gitignore`).
 
 ## License
 

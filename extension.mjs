@@ -19,7 +19,7 @@ import path from "node:path";
 // --- Paths -------------------------------------------------------------------
 
 const EXT_DIR = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
-const LOG_FILE = path.join(EXT_DIR, "agent-picker.log");
+const LOG_FILE = path.join(EXT_DIR, "copilot-agent-picker.log");
 
 const MAX_PROMPT_PREVIEW = 90; // chars logged (privacy: never log full prompt)
 const RPC_TIMEOUT_MS = 6000; // guard against a hung RPC freezing the user's turn
@@ -169,10 +169,9 @@ function parseAgentDirective(args, lines, idx) {
     const tokens = args.split(/\s+/);
     const sub = tokens[0].toLowerCase();
 
-    if (["clear", "off", "none", "remove", "reset", "default"].includes(sub)) return { kind: "clear" };
+    if (sub === "clear") return { kind: "clear" };
     if (["status", "current", "who"].includes(sub)) return { kind: "status" };
-    if (["list", "agents", "ls"].includes(sub)) return { kind: "list" };
-    if (["reload", "refresh"].includes(sub)) return { kind: "reload" };
+    if (sub === "list") return { kind: "list" };
 
     // otherwise first token is the agent name; remainder (+ later lines) is the task
     const name = tokens[0];
@@ -280,6 +279,15 @@ const session = await joinSession({
 
                 // --- list -------------------------------------------------------
                 if (directive.kind === "list") {
+                    // Best-effort: re-scan agent definition files from disk so the
+                    // list always reflects newly added/edited agents. agent.list()
+                    // alone may return the runtime's session-start cache, so we
+                    // reload first and ignore reload failures (we can still list).
+                    try {
+                        await withTimeout(session.rpc.agent.reload(), RPC_TIMEOUT_MS, "agent.reload");
+                    } catch (e) {
+                        appendLog({ ev: "list_reload_error", sessionId, msg: String(e && e.message) });
+                    }
                     let agents;
                     try {
                         agents = selectableAgents(await listRuntimeAgents());
@@ -337,20 +345,6 @@ const session = await joinSession({
                     return replyVerbatim(ok ? "🧹 #agent: reverted to the default agent (from your next message)." : `⚠ #agent: clear failed (${errMsg}).`);
                 }
 
-                // --- reload -----------------------------------------------------
-                if (directive.kind === "reload") {
-                    let count = 0;
-                    let errMsg = null;
-                    try {
-                        const r = await withTimeout(session.rpc.agent.reload(), RPC_TIMEOUT_MS, "agent.reload");
-                        count = (r && Array.isArray(r.agents)) ? r.agents.length : 0;
-                    } catch (e) {
-                        errMsg = String(e && e.message);
-                    }
-                    appendLog({ ev: "reload", sessionId, count, err: errMsg });
-                    return replyVerbatim(errMsg ? `⚠ #agent: reload failed (${errMsg}).` : `🔄 #agent: reloaded ${count} agent definition(s).`);
-                }
-
                 // --- set (switch) -----------------------------------------------
                 let choosable;
                 try {
@@ -400,10 +394,10 @@ const session = await joinSession({
                 });
                 const modelNote = selected.model ? ` (model: ${selected.model})` : "";
                 const successText = directive.task
-                    ? `🎛 #agent: switched to "${selected.name}"${modelNote}. Active from your NEXT message.\n` +
+                    ? `🔀 #agent: switched to "${selected.name}"${modelNote}. Active from your NEXT message.\n` +
                       `⚠ The rest of your message ("${preview(directive.task)}") was NOT run — resend it as a new message ` +
                       `so "${selected.name}" handles it.`
-                    : `🎛 #agent: switched to "${selected.name}"${modelNote}. Active from your next message.`;
+                    : `🔀 #agent: switched to "${selected.name}"${modelNote}. Active from your next message.`;
                 return replyVerbatim(successText);
             } catch (err) {
                 appendLog({ ev: "hook_error", sessionId, msg: String(err && err.message), stack: String(err && err.stack) });
