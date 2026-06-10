@@ -23,13 +23,29 @@ const LOG_FILE = path.join(EXT_DIR, "copilot-agent-picker.log");
 
 const MAX_PROMPT_PREVIEW = 90; // chars logged (privacy: never log full prompt)
 const RPC_TIMEOUT_MS = 6000; // guard against a hung RPC freezing the user's turn
+const MAX_LOG_BYTES = 1_000_000; // keep the single diagnostic log under ~1 MB
 
 // --- Diagnostic log (file-based; survives /clear; confirms hook fires) -------
+
+// In-memory byte counter keeps the common path to a single appendFileSync (no
+// per-call statSync). Seed once lazily from disk, then truncate the single file
+// in place when the next line would cross MAX_LOG_BYTES — no rotation, ~1 MB cap.
+let logBytes = -1; // -1 = not yet seeded from disk this process
 
 function appendLog(obj) {
     try {
         const line = JSON.stringify({ t: new Date().toISOString(), pid: process.pid, ...obj }) + "\n";
-        fs.appendFileSync(LOG_FILE, line);
+        const bytes = Buffer.byteLength(line);
+        if (logBytes < 0) {
+            try { logBytes = fs.statSync(LOG_FILE).size; } catch { logBytes = 0; }
+        }
+        if (logBytes + bytes > MAX_LOG_BYTES) {
+            fs.writeFileSync(LOG_FILE, line); // truncate + restart (single file, no rotation)
+            logBytes = bytes;
+        } else {
+            fs.appendFileSync(LOG_FILE, line);
+            logBytes += bytes;
+        }
     } catch {
         // never let logging break a turn
     }
