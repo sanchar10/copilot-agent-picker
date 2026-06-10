@@ -18,6 +18,10 @@ the runtime swaps the agent's actual tool allowlist and model, exactly like the 
 > **Real switching.** This uses the runtime's agent RPC
 > (`session.rpc.agent.select / deselect / list / getCurrent / reload`), so the swap is a genuine change of the agent's **tool allowlist + model**. The runtime keeps the selection sticky across turns, until cleared.
 
+![#agent directive switching agents in the Copilot app](copilot_agent_picker_screenshot.jpg)
+
+*`#agent` switching the active agent inside the Copilot desktop app.*
+
 ---
 
 ## Install
