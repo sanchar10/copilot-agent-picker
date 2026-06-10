@@ -358,7 +358,7 @@ const session = await joinSession({
                         errMsg = String(e && e.message);
                     }
                     appendLog({ ev: "clear", sessionId, ok, err: errMsg });
-                    return replyVerbatim(ok ? "🧹 #agent: reverted to the default agent (from your next message)." : `⚠ #agent: clear failed (${errMsg}).`);
+                    return replyVerbatim(ok ? "🧹 #agent: reverted to the default agent." : `⚠ #agent: clear failed (${errMsg}).`);
                 }
 
                 // --- set (switch) -----------------------------------------------
@@ -408,12 +408,11 @@ const session = await joinSession({
                     tools: Array.isArray(selected.tools) ? selected.tools.length : null,
                     hadTask: !!directive.task,
                 });
-                const modelNote = selected.model ? ` (model: ${selected.model})` : "";
                 const successText = directive.task
-                    ? `🔀 #agent: switched to "${selected.name}"${modelNote}. Active from your NEXT message.\n` +
+                    ? `🔀 #agent: switched to "${selected.name}".\n` +
                       `⚠ The rest of your message ("${preview(directive.task)}") was NOT run — resend it as a new message ` +
                       `so "${selected.name}" handles it.`
-                    : `🔀 #agent: switched to "${selected.name}"${modelNote}. Active from your next message.`;
+                    : `🔀 #agent: switched to "${selected.name}".`;
                 return replyVerbatim(successText);
             } catch (err) {
                 appendLog({ ev: "hook_error", sessionId, msg: String(err && err.message), stack: String(err && err.stack) });

@@ -6,7 +6,9 @@ chat directive.
 
 Custom agents are one of Copilot's most useful features — each bundles its own
 **system prompt, tool allowlist, and model**, so you can keep a focused set of personas
-(a tightly-scoped `security-review` agent, a read-only `research` agent, a heavyweight `architect` on a bigger model) and reach for the right one per task. The **CLI** lets you pick one with `/agent` and it stays active for the whole session, but the **desktop app** has no equivalent — no menu, command, or shortcut — so app users are silently locked to the default agent and can't reach the custom agents they've defined. You can still *ask* the app to "use the docs agent" in plain language, but that's not deterministic: the model may partially adopt it, or quietly drift back to the default after a few turns.
+(a tightly-scoped `security-review` agent, a read-only `research` agent, a heavyweight `architect` on a bigger model) and reach for the right one per task. The **CLI** lets you pick one with `/agent` and it stays active for the whole session, but the **desktop app** has no equivalent — no menu, command, or shortcut — so app users can't explicitely invoke custom agents they've defined. You can still *ask* the app to "use the docs agent" in plain language, but that's not deterministic: the model may partially adopt it, or quietly drift back to the default after a few turns.
+
+This makes the Copilot app hard to use with Spec-Driven Development (SDD) frameworks that drive their workflows by invoking a specific agent.
 
 This extension closes that gap. It intercepts a leading `#agent <name>` directive on the
 `onUserPromptSubmitted` hook and calls the session's agent RPC to switch agents **for real** —
@@ -14,15 +16,15 @@ the runtime swaps the agent's actual tool allowlist and model, exactly like the 
 `/agent`. The selection stays sticky until you change or clear it.
 
 > **Real switching.** This uses the runtime's agent RPC
-> (`session.rpc.agent.select / deselect / list / getCurrent / reload`), so the swap is a genuine change of the agent's **tool allowlist + model**. The runtime keeps the selection sticky until cleared.
+> (`session.rpc.agent.select / deselect / list / getCurrent / reload`), so the swap is a genuine change of the agent's **tool allowlist + model**. The runtime keeps the selection sticky across turns, until cleared.
 
 ---
 
 ## Install
 
-Pick whichever method is easiest for you; all of them just land `extension.mjs` in a discovery folder named `copilot-agent-picker`.
+Pick whichever method is easiest for you; all of them put `extension.mjs` in a copilot extensions folder named `copilot-agent-picker`.
 
-### Option A — single-file download (no git, no copy) ⭐ easiest
+### Option A — single-file download
 
 ```powershell
 # Windows (PowerShell)
@@ -39,16 +41,12 @@ curl -fsSL https://raw.githubusercontent.com/sanchar10/copilot-agent-picker/main
 ```
 
 
-### Option B — ask Copilot to install it (app, zero shell)
+### Option B — ask Copilot to install it
 
 The Copilot app can install an extension from a repo for you. In chat, ask:
 
-> Install the Copilot extension from `https://github.com/sanchar10/copilot-agent-picker`
-> and name it `copilot-agent-picker`.
+> Install the Copilot extension from `https://github.com/sanchar10/copilot-agent-picker`.
 
-> The discovery folder **must** contain `extension.mjs` directly
-> (`.../extensions/copilot-agent-picker/extension.mjs`). The folder name becomes the
-> extension id and is otherwise cosmetic — it does **not** affect the `#agent` directive.
 
 ### Activate & verify
 
@@ -85,10 +83,7 @@ The directive must be the **first non-whitespace text** on its line.
 
 This hook fires on **every** prompt, so the no-directive path is kept cheap:
 
-- **Fast-path gate:** if the prompt contains no `#` anywhere, it returns immediately — no
-  line-splitting, no stripping, no regex, **no logging / disk I/O**. (A plain `startsWith("#")`
-  can't be used because the app prepends hidden context blocks ahead of your text, so a real
-  `#agent` line rarely sits at character 0.)
+- **Fast-path gate:** if the prompt does start with `#`, it returns immediately — no stripping, no regex, **no logging / disk I/O**.
 - **Logging only on directive turns.** Normal messages write nothing to `copilot-agent-picker.log`.
 - **Extensible command dispatch.** The parser captures the command word (`#<command>`) and
   switches on it. Today only `agent` is registered; unknown `#<command>` directives pass
@@ -117,7 +112,7 @@ Agents are discovered by the runtime (same as the CLI):
 - **Each `#agent` directive costs one chat turn.** A `UserPromptSubmitted` hook can't
   abort the model turn, so the directive can't be handled silently — it's rewritten into a
   single bounded confirmation line (see *Output & failure behavior*), which stays in
-  your conversation history. The footprint is small but not zero — a ~70-token preamble plus the reply. 
+  your conversation history. The footprint is small — a ~70-token preamble plus the reply. 
   Switch/status/clear are a single line (~15–30 tokens); `#agent list` echoes one line per agent, ~15 tokens per agent.
   
   Prefer switching at a **task boundary** (start of a task, or right after `/clear`) to keep an in-progress thread clean, 

@@ -1,8 +1,0 @@
-# Diagnostic log written by the extension at runtime — never commit
-*.log
-copilot-agent-picker.log
-
-# Node / editor noise (none required at runtime, but keep the repo clean)
-node_modules/
-.DS_Store
-Thumbs.db
