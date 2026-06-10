@@ -241,6 +241,19 @@ function resolveRuntimeAgent(name, agents) {
     );
 }
 
+// Does a raw agent.select() result clearly correspond to the user-typed token?
+// Used to accept the fast path only when the runtime returned the agent we asked
+// for (guards against a lenient runtime returning a default/unrelated agent).
+function rawSelectMatches(typed, agent) {
+    if (!agent) return false;
+    const w = String(typed).toLowerCase();
+    return (
+        (agent.name && agent.name.toLowerCase() === w) ||
+        (agent.displayName && agent.displayName.toLowerCase() === w) ||
+        (agent.id && agent.id.toLowerCase() === w)
+    );
+}
+
 // --- User-facing reply -------------------------------------------------------
 // A UserPromptSubmitted hook cannot abort the model turn, and the desktop app
 // does NOT surface session.log() lines in the chat. The model's reply is the
@@ -258,9 +271,30 @@ function replyVerbatim(text) {
     };
 }
 
+// --- Surface gate ------------------------------------------------------------
+// This extension targets the Copilot **app**. In the standalone terminal CLI it
+// is redundant — the CLI already has a native `/agent` command — and registering
+// a hook there makes the CLI prompt to "approve elevated permissions" on every
+// run, which is pure noise for terminal users.
+//
+// Discriminator (verified empirically across both surfaces): the standalone
+// `copilot.exe` terminal CLI sets COPILOT_RUN_APP="1"; the desktop app embeds the
+// runtime via the SDK and does NOT set it. (The name is counterintuitive:
+// RUN_APP="1" means "running the copilot.exe application standalone", i.e. the
+// terminal — not the desktop app.) We read this at module load, BEFORE calling
+// joinSession(), so in the terminal CLI we never register a hook at all: no
+// permission prompt, no output. The app path is unchanged.
+const IS_TERMINAL_CLI = process.env.COPILOT_RUN_APP === "1";
+
 // --- Join session ------------------------------------------------------------
 
-const session = await joinSession({
+let session = null;
+
+if (IS_TERMINAL_CLI) {
+    // No joinSession() → no hook registration → no CLI permission prompt, no output.
+    appendLog({ ev: "skipped", reason: "terminal_cli" });
+} else {
+session = await joinSession({
     tools: [],
     hooks: {
         onSessionStart: async (input, invocation) => {
@@ -362,42 +396,72 @@ const session = await joinSession({
                 }
 
                 // --- set (switch) -----------------------------------------------
-                let choosable;
+                const typed = directive.name;
+                let selected = null;
+
+                // Fast path: try the raw typed name directly — no list call.
+                // The log distinguishes hit/miss so the runtime's casing behavior
+                // can be learned empirically without affecting the user-facing result.
                 try {
-                    choosable = selectableAgents(await listRuntimeAgents());
+                    const r = await withTimeout(
+                        session.rpc.agent.select({ name: typed }),
+                        RPC_TIMEOUT_MS,
+                        "agent.select(raw)",
+                    );
+                    const a = (r && r.agent) || null;
+                    if (a && rawSelectMatches(typed, a)) {
+                        selected = a;
+                        appendLog({ ev: "set_raw_hit", sessionId, typed, agent: a.name });
+                    } else if (a) {
+                        // Runtime returned an agent that doesn't clearly match the typed
+                        // token — defer to the authoritative list path for validation.
+                        appendLog({ ev: "set_raw_ambiguous", sessionId, typed, returned: a.name });
+                    } else {
+                        appendLog({ ev: "set_raw_null", sessionId, typed });
+                    }
                 } catch (e) {
-                    appendLog({ ev: "set_list_error", sessionId, name: directive.name, msg: String(e && e.message) });
-                    return replyVerbatim(`⚠ #agent: couldn't reach the agent API to switch to "${directive.name}" (${String(e && e.message)}). Try again in a moment.`);
-                }
-                const match = resolveRuntimeAgent(directive.name, choosable);
-                if (!match) {
-                    const names = choosable.map((a) => a.name).join(", ");
-                    appendLog({ ev: "set_unknown", sessionId, name: directive.name });
-                    return replyVerbatim(`⚠ #agent: unknown agent "${directive.name}". Available: ${names || "(none)"}.`);
+                    appendLog({ ev: "set_raw_miss", sessionId, typed, err: String(e && e.message) });
                 }
 
-                // Select by name; fall back to id if the runtime keys on id.
-                let selected = null;
-                let selErr = null;
-                try {
-                    const r = await withTimeout(session.rpc.agent.select({ name: match.name }), RPC_TIMEOUT_MS, "agent.select");
-                    selected = (r && r.agent) || match;
-                } catch (e) {
-                    selErr = String(e && e.message);
-                    if (match.id && match.id !== match.name) {
-                        try {
-                            const r2 = await withTimeout(session.rpc.agent.select({ name: match.id }), RPC_TIMEOUT_MS, "agent.select(id)");
-                            selected = (r2 && r2.agent) || match;
-                            selErr = null;
-                        } catch (e2) {
-                            selErr = String(e2 && e2.message);
+                // Fallback: list → fuzzy-resolve → select(canonical) → id fallback.
+                // Only runs when the fast path didn't conclusively select an agent.
+                if (!selected) {
+                    let choosable;
+                    try {
+                        choosable = selectableAgents(await listRuntimeAgents());
+                    } catch (e) {
+                        appendLog({ ev: "set_list_error", sessionId, name: typed, msg: String(e && e.message) });
+                        return replyVerbatim(`⚠ #agent: couldn't reach the agent API to switch to "${typed}" (${String(e && e.message)}). Try again in a moment.`);
+                    }
+                    const match = resolveRuntimeAgent(typed, choosable);
+                    if (!match) {
+                        const names = choosable.map((a) => a.name).join(", ");
+                        appendLog({ ev: "set_unknown", sessionId, name: typed });
+                        return replyVerbatim(`⚠ #agent: unknown agent "${typed}". Available: ${names || "(none)"}.`);
+                    }
+
+                    // Select by name; fall back to id if the runtime keys on id.
+                    let selErr = null;
+                    try {
+                        const r = await withTimeout(session.rpc.agent.select({ name: match.name }), RPC_TIMEOUT_MS, "agent.select");
+                        selected = (r && r.agent) || match;
+                    } catch (e) {
+                        selErr = String(e && e.message);
+                        if (match.id && match.id !== match.name) {
+                            try {
+                                const r2 = await withTimeout(session.rpc.agent.select({ name: match.id }), RPC_TIMEOUT_MS, "agent.select(id)");
+                                selected = (r2 && r2.agent) || match;
+                                selErr = null;
+                            } catch (e2) {
+                                selErr = String(e2 && e2.message);
+                            }
                         }
                     }
-                }
 
-                if (selErr) {
-                    appendLog({ ev: "set_error", sessionId, name: match.name, err: selErr });
-                    return replyVerbatim(`⚠ #agent: failed to select "${match.name}" (${selErr}).`);
+                    if (selErr) {
+                        appendLog({ ev: "set_error", sessionId, name: match.name, err: selErr });
+                        return replyVerbatim(`⚠ #agent: failed to select "${match.name}" (${selErr}).`);
+                    }
                 }
 
                 appendLog({
@@ -423,4 +487,6 @@ const session = await joinSession({
 });
 
 appendLog({ ev: "loaded", extDir: EXT_DIR, agentRpc: hasAgentRpc() });
+
 await session.log("agent-picker ready — `#agent <name>` to switch · `#agent list` · `#agent status` · `#agent clear`.");
+}

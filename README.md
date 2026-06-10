@@ -13,7 +13,8 @@ This makes the Copilot app hard to use with Spec-Driven Development (SDD) framew
 This extension closes that gap. It intercepts a leading `#agent <name>` directive on the
 `onUserPromptSubmitted` hook and calls the session's agent RPC to switch agents **for real** —
 the runtime swaps the agent's actual tool allowlist and model, exactly like the CLI's
-`/agent`. The selection stays sticky until you change or clear it.
+`/agent`. The selection stays sticky until you change or clear it. It works with both your
+**user-level** agents and a repo's **project-level** agents — the same set the CLI sees.
 
 > **Real switching.** This uses the runtime's agent RPC
 > (`session.rpc.agent.select / deselect / list / getCurrent / reload`), so the swap is a genuine change of the agent's **tool allowlist + model**. The runtime keeps the selection sticky across turns, until cleared.
@@ -26,7 +27,7 @@ the runtime swaps the agent's actual tool allowlist and model, exactly like the 
 
 ## Install
 
-Pick whichever method is easiest for you; all of them put `extension.mjs` in a copilot extensions folder named `copilot-agent-picker`.
+Pick either a single file copy or copilot extension install approach; they put `extension.mjs` in a copilot extensions folder named `copilot-agent-picker`.
 
 ### Option A — single-file download
 
@@ -95,7 +96,10 @@ This hook fires on **every** prompt, so the no-directive path is kept cheap:
 
 ## Agent sources
 
-Agents are discovered by the runtime (same as the CLI):
+**Both user-level and repo-level (project) agents are supported** — exactly the
+set the runtime exposes (same as the CLI). So a repo can ship its own agents
+(e.g. the agents an SDD workflow drives) and they're instantly selectable in the
+app, right alongside your personal ones:
 
 - User: `~/.copilot/agents/<name>.md` or `<name>.agent.md`
 - Project: `<git-root>/.github/agents/<name>.md` or `<name>.agent.md`
@@ -110,6 +114,15 @@ Agents are discovered by the runtime (same as the CLI):
   Written **only on directive turns** (and on errors); normal messages log nothing. Records
   each `select`/`deselect`/`list` result, used to confirm app-originated turns reach the hook
   and that switches apply.
+
+## Terminal CLI sessions
+
+This extension is built for the **Copilot app**, which has no native agent picker.
+The standalone **terminal CLI already has `/agent`**, so the extension
+**skips itself there automatically** — it detects the terminal CLI at load time
+(`COPILOT_RUN_APP=1`) and never registers its hook. The result: **no permission
+prompt** in CLI sessions, and `/agent` keeps working exactly as
+before. The extension therefore does not interfere with terminal CLI usage at all.
 
 ## Limitations
 
